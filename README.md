@@ -25,12 +25,16 @@ Check-and-install-packages.R Automatically checks and installs all necessary R p
 ## 4.2 Normative curve estimation and peak age determination
 Normative-model-fit.R Fits normative lifespan models using GAMLSS based on upper cervical spinal cord measures, estimates peak ages, and generates normative trajectories.
 ## 4.3 Bootstrap analysis of normative curve
+Bootstrap-normative-mdoel-fit.R Performs bootstrap resampling (default 1,000 iterations) to estimate confidence intervals for normative trajectories and peak ages.
 ## 4.4 ICV adjustment and model comparison
-## 4.5 Model calibration using new datasets
-## 4.6 Applying normative models to disease dataset
-## 4.7 Applying normative models to individual-level data
-## 4.8 Statistical analyses of deviation scores across diseases
-## 4.9 Clinical downstream tasks
+ICV.R Implements intracranial volume (ICV)–adjusted normative models and evaluates consistency between adjusted and non-adjusted trajectories using the concordance correlation coefficient (CCC).
+## 4.5 Applying normative models to disease dataset
+Disease-application-normative-model.R Applies the trained normative models to multi-disease datasets to compute deviation scores (Z-scores and centiles) for each patient across all hippocampal subfields.
+## 4.6 Applying normative models to individual-level data
+Individual-application-normative-model.R Computes deviation scores for a single individual or small cohort based on pre-trained normative models, enabling personalized brain health assessments.
+## 4.7 Statistical analyses of deviation scores across diseases
+Stastical-analysis-deviations-across-diseases.R Performs Monte Carlo permutation tests for group-level comparisons between diseases and matched controls, estimating p-values and effect sizes (Cohen’s d) with FDR correction.
+## 4.8 Clinical downstream tasks
 # 5. License
 MIT License
 
