@@ -1,13 +1,20 @@
- 
-rm(list=ls())
-#set your own directory
-datapath= "E:/Lifespan_SCT_results/Github/Source-codes/" # Change the directory where you save the Source-codes  
-clinical_datapath="E:/Lifespan_SCT_results/Github/Datasets/Dataset-norms/Clinical_vars.csv" # Change the directory where you save the clinical variables 
-MR_datapath="E:/Lifespan_SCT_results/Github/Datasets/Dataset-norms/MR_measures.csv" # Change the directory where you save the MR measures  
-savepath='E:/Lifespan_SCT_results/Github/Test_results/' # Create and determine the directory where you would save the results  
+rm(list = ls())
 
+# ============================================================
+# User-defined paths
+# ============================================================
+datapath <- "E:/Lifespan_SCT_results/Github/Source-codes/"              # Directory containing the source R scripts
+clinical_datapath <- "E:/Lifespan_SCT_results/Github/Datasets/Dataset-norms/Clinical_vars.csv"  # Preprocessed clinical variables
+MR_datapath <- "E:/Lifespan_SCT_results/Github/Datasets/Dataset-norms/MR_measures.csv"           # Preprocessed spinal cord MRI measures
+savepath <- "E:/Lifespan_SCT_results/Github/Test_results/"              # Output directory
 
-#load source functions
+# Select the MR-measure sheet(s) or dataset name(s) to be analyzed.
+# For the public spinal cord example, only the spinalcord dataset is used.
+var <- c("spinalcord")
+
+# ============================================================
+# Load required source functions
+# ============================================================
 setwd(datapath)
 source("100.common-variables.r")
 source("101.common-functions.r")
@@ -15,6 +22,9 @@ source("300.variables.r")
 source("301.functions.r")
 source("ZZZ_function.R")
 
+# ============================================================
+# Load required packages
+# ============================================================
 library(readxl)
 library(dplyr)
 library(ggplot2)
@@ -26,41 +36,54 @@ library(stringr)
 library(gamlss)
 library(reshape2)
 library(patchwork)
-library(extrafont)
-
-
-
-savepath="C:/Users/Lenovo/Desktop/0708分节段/分析结果/Normative_model_fit"
-clinical_datapath=paste0(datapath,'new_final_list1_update_20250927_update.xlsx')
-MR_datapath=paste0(datapath,'merged_spinal_data_260114.xlsx')
-var<-c('spinalcord')
 
 # ============================================================
-# 预先读取临床数据（只读取一次）
+# Helper functions for loading preprocessed public data
 # ============================================================
+read_table_auto <- function(path, sheet = NULL) {
+  ext <- tolower(tools::file_ext(path))
+
+  if(ext %in% c("xlsx", "xls")) {
+    if(is.null(sheet)) {
+      return(as.data.frame(readxl::read_excel(path)))
+    } else {
+      return(as.data.frame(readxl::read_excel(path, sheet = sheet)))
+    }
+  }
+
+  if(ext == "csv") {
+    return(read.csv(path, header = TRUE, stringsAsFactors = FALSE, check.names = FALSE))
+  }
+
+  stop("Unsupported file format. Please use a .csv, .xlsx, or .xls file.")
+}
+
+# The clinical file is assumed to be preprocessed and to contain the required columns,
+# including Site_ZZZ and quality-control fields. No additional numeric conversion,
+# site-label construction, or local cohort exclusion is performed here.
 setwd(datapath)
-data1<-read.xlsx(clinical_datapath)
-data1[19] <- lapply(data1[19], as.numeric)
-data1[23:50] <- lapply(data1[23:50], as.numeric)
-data1[53] <- lapply(data1[53], as.numeric)
-data1[58:132] <- lapply(data1[58:132], as.numeric)
-data1$Site_ZZZ<-paste0(data1$Province,data1$Center,data1$Manufacturer)
-data1$Site_ZZZ <- as.factor(data1$Site_ZZZ)
-#data1[,'Euler']<-data1$euler_number_l+data1$euler_number_r
-#data1[is.na(data1$Euler),'Euler']<--2
+data1_original <- read_table_auto(clinical_datapath)
 
-#Euler_bh<-data1[,'Euler']
-#Euler_bh<-Euler_bh[!is.na(Euler_bh)]
-#median_Euler<-median(Euler_bh)
-#low_Euler<-median_Euler-2*sd(Euler_bh[Euler_bh!=-2])
+required_clinical_cols <- c(
+  "Freesufer_Path2", "Freesufer_Path3", "Age", "Sex", "Site_ZZZ", "Diagnosis",
+  "Database_included", "baseline", "Image_Quality_lab", "Data_baseline"
+)
 
-data1_original <- data1
-
+missing_clinical_cols <- setdiff(required_clinical_cols, colnames(data1_original))
+if(length(missing_clinical_cols) > 0) {
+  stop(paste(
+    "The clinical file is missing required columns:",
+    paste(missing_clinical_cols, collapse = ", ")
+  ))
+}
 
 # ============================================================
-# HC 十折交叉验证辅助函数
-# 说明：仅用于新增 HC out-of-fold Z-score / Quantile；不改变原始全样本最终模型和绘图流程
+# HC 10-fold cross-validation helper functions
+# These functions are used only to generate out-of-fold Z-scores
+# and quantiles in healthy controls. They do not change the final
+# full-sample normative models or plotting workflow.
 # ============================================================
+
 make_site_stratified_folds <- function(data, k = 10, strata_col = "Site_ZZZ", seed = 123) {
   set.seed(seed)
   folds <- vector("list", k)
@@ -146,34 +169,47 @@ align_test_site_for_random_effect <- function(test_data, cv_model) {
 }
 # ============================================================
 
-# ============================================================
-
 for(sheet in var)
 { 
   setwd(datapath)
-  MRI <- read_excel(MR_datapath,sheet=sheet)
+  MRI <- read_table_auto(MR_datapath, sheet = sheet)
+
+  required_mr_cols <- c("Freesufer_Path2", "Freesufer_Path3")
+  missing_mr_cols <- setdiff(required_mr_cols, colnames(MRI))
+  if(length(missing_mr_cols) > 0) {
+    stop(paste(
+      "The MR-measure file is missing required columns:",
+      paste(missing_mr_cols, collapse = ", ")
+    ))
+  }
+
   MRI_unique <- MRI %>%
-    distinct(MRI$Freesufer_Path2, MRI$Freesufer_Path3, .keep_all = TRUE)
+    distinct(Freesufer_Path2, Freesufer_Path3, .keep_all = TRUE)
   MRI<-MRI_unique
   
-  MRI<-MRI[MRI$Freesufer_Path2!='Epilepsy_dicom_info_nii'&
-             MRI$Freesufer_Path2!='ET'&
-             MRI$Freesufer_Path2!='Guojibu_HC_nii'&
-             MRI$Freesufer_Path2!='ZUOXINIAN_nii',]
   MRI<-MRI[!is.na(MRI$Freesufer_Path3),]
   MRI<-as.data.frame(MRI)
   
   rownames(MRI)<-paste0(MRI$Freesufer_Path2,MRI$Freesufer_Path3)
   
-  if(str_detect(sheet,'spinalcord'))
+  if(str_detect(sheet, 'spinalcord'))
   {
-    tem_feature<-colnames(MRI)[c(4:6,8:10,12:14,19:24)]
+    # Select the columns corresponding to spinal cord metrics.
+    # In this dataset, these columns include CSA, RLD, APD, and MUCCA measures.
+    spinalcord_feature_cols <- c(4:6, 8:10, 12:14, 19:24)
+    if(max(spinalcord_feature_cols) > ncol(MRI)) {
+      stop("The MR-measure file does not contain all expected spinal cord metric columns.")
+    }
+    tem_feature <- colnames(MRI)[spinalcord_feature_cols]
+  } else {
+    stop("Unsupported dataset name. Please use a spinalcord dataset or modify the feature-selection block.")
   }
   
   str <- sheet
   
-  if (!(dir.exists(paste0(savepath,'/',str))))
-  {dir.create(paste0(savepath,'/',str))}
+  if (!(dir.exists(paste0(savepath, '/', str)))) {
+    dir.create(paste0(savepath, '/', str), recursive = TRUE)
+  }
   
   setwd(paste0(savepath,'/',str))
   setwd(datapath)
@@ -182,7 +218,7 @@ for(sheet in var)
   Quant_data<-list()
   
   # ============================================================
-  # 初始化 plot_list，用于收集各特征的性别分层图
+  # Initialize a list to store sex-stratified trajectory plots for each feature
   # ============================================================
   plot_list <- list()
   # ============================================================
@@ -208,7 +244,7 @@ for(sheet in var)
     data1 <- data1_original
     
     data1 <- data1 %>%
-      distinct(data1$Freesufer_Path2, data1$Freesufer_Path3, .keep_all = TRUE)
+      distinct(Freesufer_Path2, Freesufer_Path3, .keep_all = TRUE)
     
     library(dplyr)
     site_count <- data1 %>%
@@ -217,11 +253,12 @@ for(sheet in var)
     site_count<-site_count[order(site_count$count),]
     print(site_count)
     
+    # Exclude sites with fewer than 10 participants from normative modeling.
     for(site in unique(site_count$Site_ZZZ))
     {
-      if(site_count[site_count$Site_ZZZ==site,'count']<10)
+      if(site_count[site_count$Site_ZZZ == site, 'count'] < 10)
       {
-        data1[data1$Site_ZZZ==site,'Database_included']<-0
+        data1[data1$Site_ZZZ == site, 'Database_included'] <- 0
       }
     }
     
@@ -234,14 +271,13 @@ for(sheet in var)
     
     colnames(data1)[dim(data1)[2]]=c('tem_feature')
     
-    #data1[,'Euler']<-data1$euler_number_l+data1$euler_number_r
-    #data1[is.na(data1$Euler),'Euler']<--2
     
-    all_data <- data1[data1$Database_included==1 &
+    # Keep only included baseline scans that passed image-quality control.
+    all_data <- data1[data1$Database_included == 1 &
                         data1$baseline == "baseline" &
-                        (is.na(data1$Image_Quality_lab) | data1$Image_Quality_lab != 1),]
+                        (is.na(data1$Image_Quality_lab) | data1$Image_Quality_lab != 1), ]
     all_data<- all_data %>%
-      distinct(all_data$Freesufer_Path2, all_data$Freesufer_Path3, .keep_all = TRUE)
+      distinct(Freesufer_Path2, Freesufer_Path3, .keep_all = TRUE)
     
     rownames(all_data)<-paste0(all_data$Freesufer_Path2,all_data$Freesufer_Path3)
     
@@ -249,7 +285,11 @@ for(sheet in var)
     
     data1<-all_data
     
-    data1=data1[!is.na(data1$tem_feature)&!is.na(data1$Data_baseline)&data1$Diagnosis=='HC'&data1$Age>=8&data1$Age<=85,]
+    # Use eligible healthy controls to fit the normative model.
+    data1 <- data1[!is.na(data1$tem_feature) &
+                     !is.na(data1$Data_baseline) &
+                     data1$Diagnosis == 'HC' &
+                     data1$Age >= 8 & data1$Age <= 85, ]
     
     data1$Site_ZZZ<-as.factor(data1$Site_ZZZ)
     data1$Sex<-as.factor(data1$Sex)
@@ -266,12 +306,6 @@ for(sheet in var)
     data1<-data1[data1$feature>0,]
     data1<-data1[,c('Age','Sex','Site_ZZZ','tem_feature','feature')]
     
-    #data1_backup<-data1
-    #data1_child<-data1[data1$Age<=18,]
-    #data1_adult<-data1[data1$Age>18&data1$Age<70,]
-    #data1_old<-data1[data1$Age>=70,]
-    #data1_adult_sample<- data1_adult %>% sample_frac(0.3)
-    #data1<-rbind(data1_child,data1_adult_sample,data1_old)
     
     list_par <- data.frame(matrix(0, 3*3*2*2, 4))
     colnames(list_par) <- c("mu_poly", "sigma_poly", "mu_random", "sigma_random")
@@ -291,18 +325,20 @@ for(sheet in var)
       }
     }
     
-    print("list_par 中的 NA 数量:")
+    print("Number of missing values in list_par:")
     print(colSums(is.na(list_par)))
     list_par <- na.omit(list_par)
     
-    con=gamlss.control()
-    num=0
+    con <- gamlss.control()
+    num <- 0
+    list_fit <- data.frame()
+    n_cores <- max(1, parallel::detectCores() - 1)
     
     results_try<-try({
       library(doParallel)
       library(foreach)
       
-      cl<-makeCluster(detectCores()-1)
+      cl<-makeCluster(n_cores)
       registerDoParallel(cl)
       
       my_data<-foreach(num=1:dim(list_par)[1],
@@ -320,7 +356,7 @@ for(sheet in var)
       stopCluster(cl)
       
       if(is.null(my_data) || nrow(my_data) == 0) {
-        stop("所有任务都失败了，请检查 fit_model() 函数")
+        stop("All model-selection tasks failed. Please check the fit_model() function.")
       }
       
       list_fit<-my_data
@@ -334,14 +370,22 @@ for(sheet in var)
     })
     
     if(inherits(results_try,'try-error')) 
-    {sel_mu_poly=2
-    sel_sigma_poly=2
-    i_rnd=1
-    j_rnd=1
-    con=gamlss.control(c.crit = 0.01, n.cyc = 2,autostep = FALSE)  
+    {
+      sel_mu_poly <- 2
+      sel_sigma_poly <- 2
+      i_rnd <- 1
+      j_rnd <- 1
+      con <- gamlss.control(c.crit = 0.01, n.cyc = 2, autostep = FALSE)
+      list_fit <- data.frame(
+        mu_poly = sel_mu_poly,
+        sigma_poly = sel_sigma_poly,
+        mu_random = i_rnd,
+        sigma_random = j_rnd,
+        BIC = NA_real_,
+        note = "Fallback model used because automated model selection failed."
+      )
     }
     
-    #data1<-data1_backup
     
     m0<-best_fit(sel_mu_poly,sel_sigma_poly,i_rnd,j_rnd)    
     
@@ -390,13 +434,13 @@ for(sheet in var)
                                                         data=data1)}
     
     # ============================================================
-    # 第二段：预测与绘图
+    # Prediction and plotting
     # ============================================================
     
     model1<-m3
     num_length=5000
     
-    # --- m3 预测（不含性别）---
+    # --- Prediction using m3 without sex stratification ---
     if(!is.null(model1$mu.coefSmo[[1]]$coef))
     {
       data3 <- list(Age=seq(min(data1$Age),max(data1$Age),length.out=num_length),
@@ -433,7 +477,7 @@ for(sheet in var)
     data4 <- do.call(what=expand.grid, args=data3)
     nu0 <- predict(model1, newdata=data4, type="response", what="nu")
     
-    # 平均各性别/站点参数
+    # Average parameters across sex and site levels
     tem_par<-mu0; par<-tem_par[1:num_length]; Seg=length(tem_par)/num_length
     if(Seg>1){ for(Seg1 in 2:Seg){ par=par+tem_par[((Seg1-1)*num_length+1):(Seg1*num_length)] }; par=par/Seg }; mu=par
     
@@ -448,7 +492,7 @@ for(sheet in var)
                  xvalues=data4$Age[1:num_length],calibration=FALSE,lpar=3)
     p2[,'sigma']<-sigma
     
-    # --- m2 预测（含性别，合并）---
+    # --- Prediction using m2 with sex included, averaged across levels ---
     model1<-m2
     
     if(!is.null(model1$mu.coefSmo[[1]]$coef))
@@ -501,7 +545,7 @@ for(sheet in var)
                      xvalues=data4$Age[1:num_length],calibration=FALSE,lpar=3)
     p2_all[,'sigma']<-sigma
     
-    # --- m2 预测（Male only）---
+    # --- Prediction using m2 for males only ---
     model1<-m2
     if(!is.null(model1$mu.coefSmo[[1]]$coef))
     {
@@ -553,7 +597,7 @@ for(sheet in var)
                       xvalues=data4$Age[1:num_length],calibration=FALSE,lpar=3)
     male_p2[,'sigma']<-sigma
     
-    # --- m2 预测（Female only）---
+    # --- Prediction using m2 for females only ---
     model1<-m2
     if(!is.null(model1$mu.coefSmo[[1]]$coef))
     {
@@ -606,7 +650,7 @@ for(sheet in var)
     female_p2[,'sigma']<-sigma
     
     # ============================================================
-    # 整理列名
+    # Format output column names
     # ============================================================
     library(reshape2)
     colnames(p2)<-c('Age','lower99CI','lower95CI','median','upper95CI','upper99CI','sigma')
@@ -638,10 +682,10 @@ for(sheet in var)
     colnames(Male_p2)[dim(Male_p2)[2]]<-c('Gradient1')
     
     # ============================================================
-    # 判断单位、y轴标签、小标题
+    # Define units, y-axis labels, and panel titles
     # ============================================================
     
-    # 小标题映射表
+    # Mapping between feature names and panel titles
     subtitle_map <- c(
       'CSA1'  = 'C1',  'CSA2'  = 'C2',  'CSA3'  = 'C3',  'MUCCA' = 'C1-3',
       'RLD1'  = 'C1',  'RLD2'  = 'C2',  'RLD3'  = 'C3',  'RLD'   = 'C1-3',
@@ -649,7 +693,7 @@ for(sheet in var)
     )
     sub_title <- ifelse(i %in% names(subtitle_map), subtitle_map[i], i)
     
-    # 单位与行标签
+    # Units and row labels
     if(str_detect(i, regex('CSA|MUCCA', ignore_case=TRUE)))
     {
       scale1    = 1
@@ -669,12 +713,12 @@ for(sheet in var)
       row_label = 'APD'
     }
     
-    # 判断是否为每行最左列（用于显示y轴标签）
+    # Show the y-axis label only for the leftmost panel in each row
     left_col_features <- c('CSA1', 'RLD1', 'APD1')
     show_ylab <- i %in% left_col_features
     
     # ============================================================
-    # 输出单独图片：Gradient（不含性别分层）
+    # Save the gradient plot without sex stratification
     # ============================================================
     png(filename=paste0(str,'_',i,'_all_without_sex_stratified_Gradient.png'),
         width=1480, height=740, units="px", bg="white", res=300)
@@ -696,7 +740,7 @@ for(sheet in var)
     dev.off()
     
     # ============================================================
-    # 输出单独图片：不含性别分层的轨迹图
+    # Save the trajectory plot without sex stratification
     # ============================================================
     png(filename=paste0(str,'_',i,'_all_without_sex_stratified.png'),
         width=1480, height=740, units="px", bg="white", res=300)
@@ -725,7 +769,7 @@ for(sheet in var)
     dev.off()
     
     # ============================================================
-    # 输出单独图片：性别分层 Gradient
+    # Save the sex-stratified gradient plot
     # ============================================================
     png(filename=paste0(str,'_',i,'_all_with_sex_stratified_Gradient.png'),
         width=1480, height=740, units="px", bg="white", res=300)
@@ -749,7 +793,7 @@ for(sheet in var)
     dev.off()
     
     # ============================================================
-    # 输出单独图片：性别分层 Sigma
+    # Save the sex-stratified sigma plot
     # ============================================================
     png(filename=paste0(str,'_',i,'_all_with_sex_stratified_sigma.png'),
         width=1480, height=740, units="px", bg="white", res=300)
@@ -773,7 +817,7 @@ for(sheet in var)
     dev.off()
     
     # ============================================================
-    # 输出单独图片：性别分层轨迹图，并存入 plot_list 用于拼图
+    # Save the sex-stratified trajectory plot and store it for the combined figure
     # ============================================================
     png(filename=paste0(str,'_',i,'_all_with_sex_stratified.png'),
         width=1480, height=740, units="px", bg="white", res=300)
@@ -795,7 +839,7 @@ for(sheet in var)
                 color='#4FBBD8', linewidth=0.6, linetype='dotted')+
       geom_line(data=Male_p2,   aes(x=Age, y=upper95CI/scale1),
                 color='#4FBBD8', linewidth=0.6, linetype='dotted')+
-      # 小标题居中，y轴仅最左列显示
+      # Center the panel title and show the y-axis label only in the leftmost panel
       labs(title = sub_title,
            x     = '',
            y     = if(show_ylab) paste0(row_label,'\n(',ylab1,')') else '')+
@@ -815,11 +859,11 @@ for(sheet in var)
     print(p_combined)
     dev.off()
     
-    # 存入拼图列表
+    # Store the plot for the combined figure
     plot_list[[i]] <- p_combined
     
     # ============================================================
-    # 第三段：计算 Z-score 和 Quantile
+    # Calculate Z-scores and quantiles
     # ============================================================
     Z_score_sum   <- NULL
     Quant_score_sum <- NULL
@@ -842,8 +886,8 @@ for(sheet in var)
                          !is.infinite(all_data$Sex),]
     
     all_data1<-all_data[,c('Age','Sex','Site_ZZZ','tem_feature')]
-    all_data1$Sex     <-as.factor(all_data1$Sex)
-    all_data1$Site_ZZZ<-as.factor(all_data1$Site_ZZZ)
+    all_data1$Sex <- factor(all_data1$Sex, levels = c('Female', 'Male'))
+    all_data1$Site_ZZZ <- as.character(all_data1$Site_ZZZ)
     
     model1<-m2
     
@@ -853,17 +897,19 @@ for(sheet in var)
       {
         if(!(all_data1$Site_ZZZ[sub] %in% names(m2$mu.coefSmo[[1]]$coef)))
         {
-          all_data1$Site_ZZZ[sub]<-names(which.max(abs(m2$mu.coefSmo[[1]]$coef-mean(m2$mu.coefSmo[[1]]$coef))))
+          all_data1$Site_ZZZ[sub]<-names(which.min(abs(m2$mu.coefSmo[[1]]$coef - mean(m2$mu.coefSmo[[1]]$coef, na.rm = TRUE))))
         }
       }
       if(!is.null(m2$sigma.coefSmo[[1]]))
       {
         if(!(all_data1$Site_ZZZ[sub] %in% names(m2$sigma.coefSmo[[1]]$coef)))
         {
-          all_data1$Site_ZZZ[sub]<-names(which.max(abs(m2$sigma.coefSmo[[1]]$coef-mean(m2$sigma.coefSmo[[1]]$coef))))
+          all_data1$Site_ZZZ[sub]<-names(which.min(abs(m2$sigma.coefSmo[[1]]$coef - mean(m2$sigma.coefSmo[[1]]$coef, na.rm = TRUE))))
         }
       }
     }
+    
+    all_data1$Site_ZZZ <- as.factor(all_data1$Site_ZZZ)
     
     mu    <- predict(model1, newdata=all_data1, type="response", what="mu")
     sigma <- predict(model1, newdata=all_data1, type="response", what="sigma")
@@ -898,9 +944,9 @@ for(sheet in var)
     Quant_data[[i]]<-Quant_score_sum
 
     # ============================================================
-    # 新增：HC 十折交叉验证
-    # 目的：在 HC 内部生成 out-of-fold Z-score 和 Quantile，用于模型校准/稳定性检查
-    # 注意：此处只使用 data1，即已进入常模拟合的 HC 数据；不影响前面基于全部 HC 的最终模型 m2/m3 和绘图
+    # HC 10-fold cross-validation
+    # Generate out-of-fold Z-scores and quantiles in HCs for calibration and stability checks
+    # Only the HC data used for normative modeling are used here; the final full-HC models and plots are unchanged
     # ============================================================
     set.seed(123)
     k_cv <- 10
@@ -999,7 +1045,7 @@ for(sheet in var)
       Quant_sd = ifelse(is.null(Quant_score_folds_HC1), NA, sd(Quant_score_folds_HC1$Quant_score, na.rm = TRUE))
     )
     
-    # 单独保存每个特征的 HC 十折交叉验证结果，便于检查
+    # Save the HC 10-fold cross-validation results for each feature
     try({
       openxlsx::write.xlsx(
         list(
@@ -1040,10 +1086,10 @@ for(sheet in var)
     
     saveRDS(results, paste0(str,'_',i,'_loop_our_model.rds'))
     
-  } # ---- 内层 for(i) 循环结束 ----
+  } # End of the feature loop
   
   # ============================================================
-  # 拼合 3×4 总图（循环结束后执行）
+  # Combine all panels into a 3 x 4 figure after the feature loop
   # ============================================================
   library(patchwork)
   
@@ -1052,18 +1098,20 @@ for(sheet in var)
   row3_features <- c('APD1',  'APD2',  'APD3',  'APD')
   all_features  <- c(row1_features, row2_features, row3_features)
   
-  # 检查是否所有图都已生成
+  # Check whether all expected feature plots were generated
   missing_plots <- setdiff(all_features, names(plot_list))
   if(length(missing_plots) > 0){
-    warning(paste("以下特征图缺失，请检查：", paste(missing_plots, collapse=', ')))
+    warning(paste("Missing feature plots. Please check:", paste(missing_plots, collapse = ", ")))
+    message("The combined 3 x 4 figure was not generated because one or more panels are missing.")
+    next
   }
   
-  # 按行拼合
+  # Combine panels by row
   row1_patch <- wrap_plots(plot_list[row1_features], nrow=1)
   row2_patch <- wrap_plots(plot_list[row2_features], nrow=1)
   row3_patch <- wrap_plots(plot_list[row3_features], nrow=1)
   
-  # 三行合并，统一 x 轴标签
+  # Combine the three rows and add a shared x-axis label
   final_plot <- (row1_patch / row2_patch / row3_patch) +
     plot_annotation(
       caption = 'Age (years)',
@@ -1073,7 +1121,7 @@ for(sheet in var)
       )
     )
   
-  # 输出总图
+  # Save the combined figure
   setwd(paste0(savepath,'/',str))
   png(filename = paste0(str,'_combined_sex_stratified.png'),
       width  = 3200,
@@ -1084,8 +1132,8 @@ for(sheet in var)
   print(final_plot)
   dev.off()
   
-  message("总图已保存：", paste0(str,'_combined_sex_stratified.png'))
+  message("Combined figure saved: ", paste0(str, "_combined_sex_stratified.png"))
   # ============================================================
   
-} # ---- 外层 for(sheet) 循环结束 ---- 
+} # End of the sheet loop 
  
