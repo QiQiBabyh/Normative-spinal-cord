@@ -23,6 +23,7 @@ Each package contains dense age- and sex-specific centile and Z-score reference 
 ## 4.1 Required R packages and installation
 Check-and-install-packages.R Automatically checks and installs all necessary R packages required for modeling, application, and visualization.
 ## 4.2 Normative curve estimation and peak age determination
+Normative-model-fit.R Fits normative lifespan models using GAMLSS based on upper cervical spinal cord measures, estimates peak ages, and generates normative trajectories.
 ## 4.3 Bootstrap analysis of normative curve
 ## 4.4 ICV adjustment and model comparison
 ## 4.5 Model calibration using new datasets
